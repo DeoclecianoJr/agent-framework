@@ -1,0 +1,94 @@
+# generated: 16-01-2026 21:42
+# project: ai_framework  
+# project_key: ai_framework
+# tracking_system: file-system
+# story_location: /home/wbj-compassuol-010/Documents/projects/ai_framework/_bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - SM typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 16-01-2026 21:42
+project: ai_framework
+project_key: ai_framework
+tracking_system: file-system
+story_location: /home/wbj-compassuol-010/Documents/projects/ai_framework/_bmad-output/implementation-artifacts
+
+development_status:
+  # Epic 1: Foundation Infrastructure & Developer Setup
+  epic-1: done
+  1-1-project-installation-pypi-package-setup: done
+  1-2-configuration-system-yaml-environment-overrides: done
+  1-3-database-schema-migration-system: done
+  1-4-health-check-system-validation: done
+  1-5-development-hot-reload-debug-mode: done
+  epic-1-retrospective: optional
+  
+  # Epic 2: SDK Development Experience
+  epic-2: done
+  2-1-agent-decorator-registration-system: done
+  2-2-agent-templates-quick-start: done
+  2-3-cli-playground-interactive-testing: done
+  2-4-agent-executor-implementation: done
+  2-5-local-agent-testing-validation: done
+  epic-2-retrospective: optional
+  
+  # Epic 3: Runtime Chat API
+  epic-3: done
+  3-1-chat-session-management-api: done
+  3-2-message-sending-response-api: done
+  3-3-session-history-pagination: done
+  3-4-api-authentication-security: done
+  3-5-openapi-documentation-validation: done
+  epic-3-retrospective: optional
+  
+  # Epic 4: LLM Integration & Memory
+  epic-4: done
+  4-1-llm-provider-abstraction-layer: done
+  4-2-multi-provider-support-configuration: done
+  4-3-memory-strategies-context-management: done
+  4-4-token-counting-cost-tracking: backlog
+  4-5-retry-logic-provider-fallback: backlog
+  epic-4-retrospective: optional
+  
+  # Epic 5: Tools & Agent Capabilities
+  epic-5: done
+  5-1-tool-decorator-registration-system: done
+  5-2-built-in-tool-library-discovery: done
+  5-3-tool-execution-parameter-validation: done
+  5-4-agent-reasoning-tool-selection: done
+  5-5-guardrails-safety-controls: backlog
+  epic-5-retrospective: optional
+  
+  # Epic 6: Production Operations & Security
+  epic-6: backlog
+  6-1-structured-logging-distributed-tracing: backlog
+  6-2-pii-detection-data-protection: backlog
+  6-3-audit-logging-compliance: backlog
+  6-4-production-deployment-monitoring: backlog
+  epic-6-retrospective: optional

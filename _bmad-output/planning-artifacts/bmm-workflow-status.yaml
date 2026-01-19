@@ -1,0 +1,19 @@
+generated: "2026-01-16"
+project: "ai_framework"
+project_type: "software"
+project_level: "project"
+selected_track: "bmad-method"
+field_type: "brownfield"
+workflow_path: "_bmad/bmm/workflows/workflow-status/paths/method-brownfield.yaml"
+workflow_status:
+  document-project: required
+  brainstorm-project: skipped
+  research: skipped
+  product-brief: skipped
+  prd: "_bmad-output/planning-artifacts/prd.md"
+  create-ux-design: skipped
+  create-architecture: "_bmad-output/planning-artifacts/architecture.md"
+  create-epics-and-stories: "_bmad-output/planning-artifacts/epics.md"
+  test-design: optional
+  implementation-readiness: "_bmad-output/planning-artifacts/implementation-readiness-report-2026-01-16.md"
+  sprint-planning: "_bmad-output/implementation-artifacts/sprint-status.yaml"
