@@ -11,6 +11,7 @@ async def test_executor_formats_messages_correctly():
         def __init__(self):
             super().__init__()
             self.captured_messages = None
+            self.model = "mock-model"  # Add model attribute
         async def chat(self, messages, **kwargs):
             self.captured_messages = messages
             return await super().chat(messages, **kwargs)

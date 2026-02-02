@@ -35,6 +35,20 @@ This document defines the development workflow and standards for the AI Agent Fr
 
 ## 2. Code Standards
 
+### Production-First Philosophy
+
+**⚠️ CRITICAL: No Simplified/Fallback Versions**
+- **Always work with stable, production-ready code** 
+- **Never create simplified versions or fallbacks** when APIs don't match expectations
+- **When calls don't match the programmed interface:**
+  - ❌ DON'T create simplified endpoints or dummy responses  
+  - ❌ DON'T add fallback logic or "basic" alternatives
+  - ✅ DO provide clear guidance on how to fix the interface mismatch
+  - ✅ DO show the correct request format and expected parameters
+  - ✅ DO update schemas/models to match production requirements
+- **Maintain high code quality standards** - no shortcuts or temporary solutions
+- **Guide users to fix root causes** rather than creating workarounds
+
 ### File Organization
 
 **SDK Package** (`ai_framework/`):

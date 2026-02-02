@@ -23,23 +23,17 @@ from sqlalchemy import (
     JSON,
 )
 from sqlalchemy.orm import declarative_base, relationship
+from pgvector.sqlalchemy import Vector
 import hashlib
 import secrets
+import uuid
 
 Base = declarative_base()
 
 
 class Agent(Base):
     """
-    Represents an agent configuration in the database.
-    
-    Attributes:
-        id: Unique agent identifier (UUID or name)
-        name: Human-readable name
-        description: agent purpose/description
-        config: JSON configuration (model, system_prompt, etc.)
-        created_at: Timestamp of creation
-        updated_at: Timestamp of last update
+    Represents an agent definition.
     """
     __tablename__ = "agents"
     
@@ -49,9 +43,6 @@ class Agent(Base):
     config = Column(JSON, nullable=False, default={})
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-    
-    # Relationships
-    sessions = relationship("Session", back_populates="agent", cascade="all, delete-orphan")
 
 
 class Session(Base):
@@ -60,7 +51,7 @@ class Session(Base):
     
     Attributes:
         id: Unique session identifier (UUID)
-        agent_id: Foreign key to Agent
+        agent_id: Reference to the internal agent (matched in AgentRegistry)
         user_id: External user identifier (optional)
         attrs: JSON metadata (user context, external references, etc.)
         created_at: Timestamp of creation
@@ -76,7 +67,6 @@ class Session(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     # Relationships
-    agent = relationship("Agent", back_populates="sessions")
     messages = relationship("Message", back_populates="session", cascade="all, delete-orphan")
 
 
@@ -181,3 +171,86 @@ class ToolCall(Base):
     
     # Relationships
     message = relationship("Message", back_populates="tool_calls")
+
+
+class AuditLog(Base):
+    """
+    Represents an audit entry for security-critical actions.
+    
+    Attributes:
+        id: Unique identifier (UUID)
+        event_type: Type of event (e.g., "create_api_key", "update_guardrails")
+        actor: Who performed the action (e.g., system, user_ip, admin)
+        metadata: Details about the event (JSON)
+        timestamp: When the event occurred
+    """
+    __tablename__ = "audit_logs"
+    
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    event_type = Column(String(100), nullable=False, index=True)
+    actor = Column(String(255), nullable=True)  # IP or User ID if available
+    event_data = Column(JSON, nullable=False, default={})
+    timestamp = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
+
+
+class KnowledgeDocument(Base):
+    """
+    Represents a document chunk with vector embeddings for RAG.
+    
+    Attributes:
+        id: Unique identifier (UUID)
+        agent_id: Reference to agent (for knowledge isolation)
+        source_type: Type of source ('google_drive', 'sharepoint', 'manual')
+        source_id: File ID from Drive/SharePoint API
+        file_name: Original file name
+        content_chunk: Text content of this chunk
+        chunk_index: Position of chunk in original document
+        embedding: Vector embedding (384 dimensions for all-MiniLM-L6-v2 local model)
+        attrs: JSONB with page_number, folder_path, last_modified, etc.
+        created_at: Timestamp of creation
+        updated_at: Timestamp of last update
+    """
+    __tablename__ = "knowledge_documents"
+    
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    agent_id = Column(String(255), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_type = Column(String(50), nullable=False, index=True)
+    source_id = Column(String(255), nullable=False, index=True)
+    file_name = Column(String(500), nullable=False)
+    content_chunk = Column(Text, nullable=False)
+    chunk_index = Column(Integer, nullable=False, default=0)
+    embedding = Column(Vector(384), nullable=True)  # all-MiniLM-L6-v2 local embeddings (384 dimensions)
+    attrs = Column(JSON, nullable=False, default={})
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class KnowledgeSource(Base):
+    """
+    Represents a configured knowledge source for an agent.
+    
+    Attributes:
+        id: Unique identifier (UUID)
+        agent_id: Reference to agent
+        source_type: Type of source ('google_drive', 'sharepoint')
+        config: JSONB with folder_id, site_url, access_token_encrypted, refresh_token_encrypted
+        last_sync_at: Timestamp of last successful sync
+        next_sync_at: Timestamp of next scheduled sync
+        sync_status: Current sync status ('pending', 'running', 'completed', 'failed')
+        sync_errors: JSONB with error details if sync failed
+        created_at: Timestamp of creation
+        updated_at: Timestamp of last update
+    """
+    __tablename__ = "knowledge_sources"
+    
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    agent_id = Column(String(255), ForeignKey("agents.id", ondelete="CASCADE"), nullable=False, index=True)
+    source_type = Column(String(50), nullable=False)
+    config = Column(JSON, nullable=False, default={})
+    last_sync_at = Column(DateTime(timezone=True), nullable=True)
+    next_sync_at = Column(DateTime(timezone=True), nullable=True)
+    sync_status = Column(String(50), nullable=False, default="pending")
+    sync_errors = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+

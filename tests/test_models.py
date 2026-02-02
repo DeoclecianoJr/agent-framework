@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from app.core.models import Base, APIKey, Session as DBSession, Message, ToolCall, Agent
+from app.core.models import Base, APIKey, Session as DBSession, Message, ToolCall
 import uuid
 
 
@@ -63,10 +63,6 @@ class TestSessionModel:
     def test_session_timestamps_auto_set(self, sqlite_memory_db):
         """Test that created_at and updated_at are auto-set."""
         db = sqlite_memory_db
-        # We need an agent first because of foreign key
-        agent = Agent(id="test", name="Test Agent")
-        db.add(agent)
-        db.commit()
         
         session = DBSession(id=str(uuid.uuid4()), agent_id="test")
         before = datetime.now(timezone.utc)

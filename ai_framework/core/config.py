@@ -49,6 +49,31 @@ class SDKSettings(BaseSettings):
     mock_response: str = Field(default="mock-response")
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
+    google_api_key: Optional[str] = None
+
+    # Ollama Settings
+    ollama_base_url: str = Field(default="http://localhost:11434")
+    ollama_timeout: int = Field(default=60)
+    ollama_num_ctx: int = Field(default=2048)
+
+    # Gemini Settings
+    gemini_model: str = Field(default="gemini-pro")
+    gemini_temperature: float = Field(default=0.7)
+    gemini_max_output_tokens: int = Field(default=2048)
+    gemini_top_p: float = Field(default=0.95)
+    gemini_top_k: int = Field(default=40)
+
+    # Resilience Settings
+    llm_max_retries: int = Field(default=3)
+    max_tool_iterations: int = Field(default=5)
+
+    # Memory Settings
+    memory_max_messages: int = Field(default=15)
+    memory_summary_language: str = Field(default="português")
+
+    # Guardrails Settings
+    guardrails_enabled: bool = Field(default=True)
+    default_allowed_themes: list[str] = Field(default_factory=list)
 
     @classmethod
     def settings_customise_sources(
@@ -62,8 +87,9 @@ class SDKSettings(BaseSettings):
         return (
             init_settings,
             env_settings,
-            dotenv_settings,
             YamlConfigSettingsSource(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
         )
 
 

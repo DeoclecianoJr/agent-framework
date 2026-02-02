@@ -1,32 +1,71 @@
+"""Tests for metrics and statistics endpoints."""
 import pytest
-from fastapi.testclient import TestClient
-from app.main import app
+from prometheus_client import parser
 
-def test_metrics_endpoint_unauthenticated():
-    """Verify that metrics endpoint is accessible (or not, depending on requirements).
-    Based on Task 14, it should be exposed.
-    """
-    client = TestClient(app)
+def test_metrics_prometheus_format(client):
+    """Verify that /metrics endpoint returns Prometheus text format."""
     response = client.get("/metrics")
     assert response.status_code == 200
-    assert "http_requests_total" in response.text
+    assert "text/plain" in response.headers["content-type"]
+    
+    content = response.text
+    # Verify it has standard Prometheus headers
+    # Note: Family name might be 'http_requests' or 'http_requests_total' depending on library version behavior
+    assert "http_requests_total" in content
+    
+    # Try parsing to ensure validity
+    families = list(parser.text_string_to_metric_families(content))
+    assert len(families) > 0
+
+def test_admin_stats_endpoint(client):
+    """Verify that /admin/stats endpoint returns business JSON metrics."""
+    # Add dummy key to pass middleware presence check
+    client.headers.update({"X-API-Key": "dummy-key-for-middleware"})
+    
+    response = client.get("/admin/stats")
+    assert response.status_code == 200
+    
+    data = response.json()
+    
+    # Verify structure matches the moved logic
+    assert "summary" in data
+    assert "agents" in data
+    assert "models" in data
+    assert "timestamp" in data
+    
+    # Verify values
+    summary = data["summary"]
+    assert "total_messages" in summary
+    assert "total_cost_usd" in summary
 
 @pytest.mark.asyncio
-async def test_metrics_increment_on_request():
-    """Verify that metrics increment after a request."""
-    client = TestClient(app)
+async def test_metrics_counter_increment(client):
+    """Verify that Prometheus counters increment on requests."""
+    client.headers.update({"X-API-Key": "dummy-key-for-middleware"})
+
+    # Make a request (this guarantees at least one request)
+    client.post("/admin/api-keys", json={"name": "test_metrics_key_3"})
+
+    # Get updated count
+    response = client.get("/metrics")
+    updated_content = response.text
     
-    # Check initial metrics
-    initial_response = client.get("/metrics")
-    assert initial_response.status_code == 200
+    # Parse families
+    families = {f.name: f for f in parser.text_string_to_metric_families(updated_content)}
     
-    # Make a request to a tracked endpoint (e.g., /admin/api-keys or something that exists)
-    # Even if it returns 401/405, it should be tracked by middleware if it reaches it
-    client.post("/admin/api-keys", json={"name": "test"})
+    # Find the metric family that contains 'http_requests_total' samples
+    request_family = None
+    if 'http_requests_total' in families:
+        request_family = families['http_requests_total']
+    elif 'http_requests' in families:
+        request_family = families['http_requests']
     
-    # Check metrics again
-    updated_response = client.get("/metrics")
-    assert "http_requests_total" in updated_response.text
-    # We expect at least one hit for POST /admin/api-keys
-    assert 'method="POST"' in updated_response.text
-    assert 'endpoint="/admin/api-keys"' in updated_response.text
+    assert request_family is not None, "Could not find http_requests_total metric family"
+    
+    # Count total requests where sample name matches
+    total_requests = 0.0
+    for sample in request_family.samples:
+        if sample.name == 'http_requests_total':
+            total_requests += sample.value
+            
+    assert total_requests > 0

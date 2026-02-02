@@ -4,63 +4,53 @@ Tests for sending messages to agents and retrieving chat history.
 """
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app.main import app
-from app.core.models import Base, Session as SessionModel, Message, Agent as AgentModel
-from app.core.dependencies import get_db, TEST_API_KEY
+from app.core.models import Session as SessionModel, Message
+from app.core.dependencies import get_db, TEST_API_KEY, get_llm_service
 from ai_framework.agent import AgentRegistry
 from ai_framework.decorators import agent as agent_decorator
+from ai_framework.llm import BaseLLM
 
-# Database setup
-engine = create_engine(
-    "sqlite:///./test_chat.db",
-    connect_args={"check_same_thread": False}
-)
-Base.metadata.create_all(bind=engine)
-TestingSessionLocal = sessionmaker(bind=engine)
-
+class MockEchoLLM(BaseLLM):
+    """Mock LLM that echoes the user message."""
+    model = "mock-model"
+    
+    async def chat(self, messages, **kwargs):
+        last_msg = messages[-1]["content"] if messages else ""
+        return {
+            "content": f"Response to {last_msg}", 
+            "role": "assistant",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15, "cost": 0.001}
+        }
+    
+    async def get_token_count(self, text):
+        return len(text.split())
 
 @pytest.fixture
-def db_session():
-    """Create a fresh database session for each test."""
-    session = TestingSessionLocal()
+def client(sqlite_memory_db):
+    """FastAPI test client with overridden database and LLM."""
+    # Override dependency before creating client
+    app.dependency_overrides[get_db] = lambda: sqlite_memory_db
+    app.dependency_overrides[get_llm_service] = lambda: MockEchoLLM()
     
-    # Clear all data before test - order matters due to FK
-    session.query(Message).delete()
-    session.query(SessionModel).delete()
-    session.query(AgentModel).delete()
-    session.commit()
+    # Create client
+    client = TestClient(app)
     
-    yield session
+    # Add authentication header  
+    client.headers.update({"X-API-Key": TEST_API_KEY})
     
-    session.close()
-
-
-@pytest.fixture
-def client(db_session):
-    """FastAPI test client with overridden database."""
-    app.dependency_overrides[get_db] = lambda: db_session
-    yield TestClient(app)
+    yield client
+    
+    # Cleanup
     app.dependency_overrides.clear()
 
 
 @pytest.fixture
-def test_agent(db_session):
-    """Register a test agent in the SDK registry and database."""
+def test_agent(sqlite_memory_db):
+    """Register a test agent in the SDK registry."""
     registry = AgentRegistry.instance()
     agent_id = "test-agent-1"
-    
-    # Create in DB
-    agent_db = AgentModel(
-        id=agent_id,
-        name="Test Agent",
-        description="A test agent",
-        config={}
-    )
-    db_session.add(agent_db)
-    db_session.commit()
     
     # Check if already registered in SDK
     try:
@@ -109,10 +99,11 @@ class TestStartChat:
             headers={"X-API-Key": TEST_API_KEY}
         )
         assert response.status_code == 404
-        assert "not found" in response.json()["detail"].lower()
+        assert "not registered" in response.json()["detail"].lower()
     
     def test_start_chat_requires_api_key(self, client, test_agent):
         """Starting chat without API key should return 401."""
+        client.headers.pop("X-API-Key", None)
         response = client.post(
             "/chat/",
             json={"agent_id": test_agent.name}
@@ -123,15 +114,15 @@ class TestStartChat:
 class TestGetChatSession:
     """Test retrieving chat session details."""
     
-    def test_get_chat_session(self, db_session, client, test_agent):
+    def test_get_chat_session(self, sqlite_memory_db, client, test_agent):
         """Getting chat session should return session details."""
         session = SessionModel(
             id="session-1",
             agent_id=test_agent.name,
             attrs={"topic": "test"}
         )
-        db_session.add(session)
-        db_session.commit()
+        sqlite_memory_db.add(session)
+        sqlite_memory_db.commit()
         
         response = client.get(
             f"/chat/{session.id}",
@@ -152,12 +143,13 @@ class TestGetChatSession:
         assert response.status_code == 404
         assert "Session not found" in response.json()["detail"]
     
-    def test_get_session_requires_api_key(self, db_session, client, test_agent):
+    def test_get_session_requires_api_key(self, sqlite_memory_db, client, test_agent):
         """Getting session without API key should return 401."""
         session = SessionModel(id="session-1", agent_id=test_agent.name)
-        db_session.add(session)
-        db_session.commit()
+        sqlite_memory_db.add(session)
+        sqlite_memory_db.commit()
         
+        client.headers.pop("X-API-Key", None)
         response = client.get(f"/chat/{session.id}")
         assert response.status_code == 401
 
@@ -165,11 +157,11 @@ class TestGetChatSession:
 class TestGetChatHistory:
     """Test retrieving chat message history."""
     
-    def test_get_chat_history_empty(self, db_session, client, test_agent):
+    def test_get_chat_history_empty(self, sqlite_memory_db, client, test_agent):
         """Getting history for empty session should return empty list."""
         session = SessionModel(id="session-1", agent_id=test_agent.name)
-        db_session.add(session)
-        db_session.commit()
+        sqlite_memory_db.add(session)
+        sqlite_memory_db.commit()
         
         response = client.get(
             f"/chat/{session.id}/messages",
@@ -180,11 +172,11 @@ class TestGetChatHistory:
         assert data["messages"] == []
         assert data["total"] == 0
     
-    def test_get_chat_history_with_messages(self, db_session, client, test_agent):
+    def test_get_chat_history_with_messages(self, sqlite_memory_db, client, test_agent):
         """Getting history should return all messages in session."""
         session = SessionModel(id="session-1", agent_id=test_agent.name)
-        db_session.add(session)
-        db_session.commit()
+        sqlite_memory_db.add(session)
+        sqlite_memory_db.commit()
         
         # Add messages
         msg1 = Message(
@@ -199,9 +191,9 @@ class TestGetChatHistory:
             role="assistant",
             content="Hi there"
         )
-        db_session.add(msg1)
-        db_session.add(msg2)
-        db_session.commit()
+        sqlite_memory_db.add(msg1)
+        sqlite_memory_db.add(msg2)
+        sqlite_memory_db.commit()
         
         response = client.get(
             f"/chat/{session.id}/messages",
@@ -212,11 +204,11 @@ class TestGetChatHistory:
         assert len(data["messages"]) == 2
         assert data["total"] == 2
     
-    def test_get_chat_history_pagination(self, db_session, client, test_agent):
+    def test_get_chat_history_pagination(self, sqlite_memory_db, client, test_agent):
         """Getting history with pagination should respect limit/offset."""
         session = SessionModel(id="session-1", agent_id=test_agent.name)
-        db_session.add(session)
-        db_session.commit()
+        sqlite_memory_db.add(session)
+        sqlite_memory_db.commit()
         
         # Add 10 messages
         for i in range(10):
@@ -226,8 +218,8 @@ class TestGetChatHistory:
                 role="user" if i % 2 == 0 else "assistant",
                 content=f"Message {i}"
             )
-            db_session.add(msg)
-        db_session.commit()
+            sqlite_memory_db.add(msg)
+        sqlite_memory_db.commit()
         
         # Test limit
         response = client.get(
@@ -263,11 +255,11 @@ class TestGetChatHistory:
 class TestSendMessage:
     """Test sending messages to an agent."""
     
-    def test_send_message(self, db_session, client, test_agent):
+    def test_send_message(self, sqlite_memory_db, client, test_agent):
         """Sending message should create user and agent messages."""
         session = SessionModel(id="session-1", agent_id=test_agent.name)
-        db_session.add(session)
-        db_session.commit()
+        sqlite_memory_db.add(session)
+        sqlite_memory_db.commit()
         
         response = client.post(
             f"/chat/{session.id}/message",
@@ -290,11 +282,11 @@ class TestSendMessage:
         )
         assert response.status_code == 404
     
-    def test_send_message_saves_to_database(self, db_session, client, test_agent):
+    def test_send_message_saves_to_database(self, sqlite_memory_db, client, test_agent):
         """Sending message should persist to database."""
         session = SessionModel(id="session-1", agent_id=test_agent.name)
-        db_session.add(session)
-        db_session.commit()
+        sqlite_memory_db.add(session)
+        sqlite_memory_db.commit()
         
         response = client.post(
             f"/chat/{session.id}/message",
@@ -304,18 +296,19 @@ class TestSendMessage:
         assert response.status_code == 201
         
         # Verify messages saved
-        messages = db_session.query(Message).filter(
+        messages = sqlite_memory_db.query(Message).filter(
             Message.session_id == session.id
         ).all()
         assert len(messages) == 2  # user + agent
         assert messages[0].content == "Test message"
     
-    def test_send_message_requires_api_key(self, db_session, client, test_agent):
+    def test_send_message_requires_api_key(self, sqlite_memory_db, client, test_agent):
         """Sending message without API key should return 401."""
         session = SessionModel(id="session-1", agent_id=test_agent.name)
-        db_session.add(session)
-        db_session.commit()
+        sqlite_memory_db.add(session)
+        sqlite_memory_db.commit()
         
+        client.headers.pop("X-API-Key", None)
         response = client.post(
             f"/chat/{session.id}/message",
             json={"message": "Hello"}
@@ -337,7 +330,7 @@ class TestListChatSessions:
         assert data["sessions"] == []
         assert data["total"] == 0
     
-    def test_list_sessions_with_data(self, db_session, client, test_agent):
+    def test_list_sessions_with_data(self, sqlite_memory_db, client, test_agent):
         """Listing sessions should return all sessions."""
         # Create 3 sessions
         for i in range(3):
@@ -345,8 +338,8 @@ class TestListChatSessions:
                 id=f"session-{i}",
                 agent_id=test_agent.name
             )
-            db_session.add(session)
-        db_session.commit()
+            sqlite_memory_db.add(session)
+        sqlite_memory_db.commit()
         
         response = client.get(
             "/chat/",
@@ -357,7 +350,7 @@ class TestListChatSessions:
         assert len(data["sessions"]) == 3
         assert data["total"] == 3
     
-    def test_list_sessions_pagination(self, db_session, client, test_agent):
+    def test_list_sessions_pagination(self, sqlite_memory_db, client, test_agent):
         """Listing sessions with pagination should respect limit/offset."""
         # Create 10 sessions
         for i in range(10):
@@ -365,8 +358,8 @@ class TestListChatSessions:
                 id=f"session-{i}",
                 agent_id=test_agent.name
             )
-            db_session.add(session)
-        db_session.commit()
+            sqlite_memory_db.add(session)
+        sqlite_memory_db.commit()
         
         # Test limit
         response = client.get(
@@ -391,11 +384,11 @@ class TestListChatSessions:
 class TestDeleteChatSession:
     """Test deleting chat sessions."""
     
-    def test_delete_session(self, db_session, client, test_agent):
+    def test_delete_session(self, sqlite_memory_db, client, test_agent):
         """Deleting session should remove it and associated messages."""
         session = SessionModel(id="session-1", agent_id=test_agent.name)
-        db_session.add(session)
-        db_session.commit()
+        sqlite_memory_db.add(session)
+        sqlite_memory_db.commit()
         
         response = client.delete(
             f"/chat/{session.id}",
@@ -404,7 +397,7 @@ class TestDeleteChatSession:
         assert response.status_code == 204
         
         # Verify deletion
-        deleted = db_session.query(SessionModel).filter(
+        deleted = sqlite_memory_db.query(SessionModel).filter(
             SessionModel.id == session.id
         ).first()
         assert deleted is None
@@ -417,12 +410,13 @@ class TestDeleteChatSession:
         )
         assert response.status_code == 404
     
-    def test_delete_session_requires_api_key(self, db_session, client, test_agent):
+    def test_delete_session_requires_api_key(self, sqlite_memory_db, client, test_agent):
         """Deleting session without API key should return 401."""
         session = SessionModel(id="session-1", agent_id=test_agent.name)
-        db_session.add(session)
-        db_session.commit()
+        sqlite_memory_db.add(session)
+        sqlite_memory_db.commit()
         
+        client.headers.pop("X-API-Key", None)
         response = client.delete(f"/chat/{session.id}")
         assert response.status_code == 401
 
@@ -466,7 +460,7 @@ class TestChatIntegration:
         assert session_response.status_code == 200
         assert session_response.json()["id"] == session_id
     
-    def test_multiple_sessions_independent(self, client, test_agent, db_session):
+    def test_multiple_sessions_independent(self, client, test_agent, sqlite_memory_db):
         """Multiple sessions should be independent."""
         # Create two sessions
         session1 = client.post(
@@ -494,3 +488,34 @@ class TestChatIntegration:
         )
         assert response.status_code == 200
         assert len(response.json()["messages"]) == 0
+
+class TestPIIMasking:
+    """Test automatic PII masking in chat."""
+    
+    def test_pii_masking_e2e(self, client, sqlite_memory_db, test_agent):
+        """Test that PII is masked in both DB and LLM execution."""
+        # 1. Start session
+        res = client.post("/chat", json={"agent_id": test_agent.name})
+        session_id = res.json()["id"]
+        
+        # 2. Send message with PII
+        pii_msg = "My email is user@example.com, please contact me."
+        res = client.post(f"/chat/{session_id}/message", json={"message": pii_msg})
+        assert res.status_code == 201
+        data = res.json()
+        
+        # 3. Verify response echoes masked content (since mock agent echoes input)
+        # ChatResponse has user_message and agent_message
+        assert "[PII:EMAIL]" in data["user_message"]["content"]
+        assert "user@example.com" not in data["user_message"]["content"]
+        
+        # Agent response should also reflect masked input
+        agent_content = data["agent_message"]["content"]
+        assert "[PII:EMAIL]" in agent_content
+        assert "user@example.com" not in agent_content
+        
+        # 4. Verify DB persistence
+        msgs = client.get(f"/chat/{session_id}/messages").json()["messages"]
+        user_msg = next(m for m in msgs if m["role"] == "user")
+        assert "[PII:EMAIL]" in user_msg["content"]
+        assert "user@example.com" not in user_msg["content"]

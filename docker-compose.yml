@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database with pgvector
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ai_framework_postgres
+    environment:
+      POSTGRES_DB: ai_framework
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ai_framework"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # AI Framework API
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ai_framework_api
+    environment:
+      # Database
+      DATABASE_URL: "postgresql://postgres:postgres123@postgres:5432/ai_framework"
+      
+      # LLM Providers
+      AI_SDK_LLM_PROVIDER: "openai"
+      AI_SDK_LLM_MODEL: "gpt-4o-mini"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      AI_SDK_OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      
+      # Google OAuth for Drive
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
+      GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET:-}"
+      GOOGLE_REDIRECT_URI: "${GOOGLE_REDIRECT_URI:-}"
+      
+      # Security
+      SECRET_KEY: "super-secret-key-change-in-production"
+      ENCRYPTION_KEY: "rS4sX4y1A2nTqeCOWRn2w8x8zTOAA16zjrVP-PEX5Lk="
+      
+      # API Keys (for testing)
+      DEFAULT_API_KEY: "test-api-key-12345"
+      
+      # Logging
+      LOG_LEVEL: "INFO"
+      
+      # Performance
+      WORKERS: 1
+      
+      # HuggingFace cache (fix permission issues)
+      TRANSFORMERS_CACHE: "/app/.cache/huggingface"
+      HF_HOME: "/app/.cache/huggingface"
+      
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      # Hot-reload: mount source code for instant changes without rebuild
+      - ./app:/app/app
+      - ./ai_framework:/app/ai_framework
+      - ./alembic:/app/alembic
+      - ./.env:/app/.env
+      # Persistent data
+      - ./logs:/app/logs
+      - ./google_drive_credentials.json:/app/google_drive_credentials.json:ro
+      # HuggingFace cache (persistent between restarts)
+      - huggingface_cache:/app/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        sleep 10 &&
+        echo 'Starting API with auto-reload...' &&
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
+
+volumes:
+  postgres_data:
+  huggingface_cache:

@@ -37,3 +37,8 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+
+# OAuth Credentials (NEVER COMMIT)
+google_drive_credentials.json
+microsoft_graph_credentials.json
+*.oauth.json

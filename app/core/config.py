@@ -10,7 +10,7 @@ class APISettings(SDKSettings):
     """Configuration for the FastAPI Runtime API."""
 
     model_config = SettingsConfigDict(
-        env_prefix="AI_APP_",  # App specific prefix
+        env_prefix="AI_SDK_",  # Use same prefix as SDK to avoid confusion
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",

@@ -12,20 +12,22 @@ async def test_executor_with_memory():
     # First turn
     result = await executor.execute("session-1", "hello")
     assert result["content"] == "executor reply"
-    assert len(memory.get_messages()) == 2
-    assert memory.get_messages()[0]["content"] == "hello"
-    assert memory.get_messages()[1]["content"] == "executor reply"
+    assert len(await memory.get_messages()) == 2
+    msgs = await memory.get_messages()
+    assert msgs[0]["content"] == "hello"
+    assert msgs[1]["content"] == "executor reply"
     
     # Second turn
     await executor.execute("session-1", "how are you?")
-    assert len(memory.get_messages()) == 4
-    assert memory.get_messages()[2]["content"] == "how are you?"
+    assert len(await memory.get_messages()) == 4
+    msgs = await memory.get_messages()
+    assert msgs[2]["content"] == "how are you?"
 
 @pytest.mark.asyncio
 async def test_executor_explicit_history_overrides_memory():
     llm = get_llm("mock")
     memory = BufferMemory()
-    memory.add_message("user", "stored message")
+    await memory.add_message("user", "stored message")
     executor = AgentExecutor(llm, memory=memory)
     
     # Provide explicit history
@@ -34,5 +36,6 @@ async def test_executor_explicit_history_overrides_memory():
     # but we can check if it still adds to memory.
     result = await executor.execute("session-1", "new message", history=explicit_history)
     
-    assert len(memory.get_messages()) == 3 # original 1 + new user + new assistant
-    assert memory.get_messages()[1]["content"] == "new message"
+    assert len(await memory.get_messages()) == 3 # original 1 + new user + new assistant
+    msgs = await memory.get_messages()
+    assert msgs[1]["content"] == "new message"

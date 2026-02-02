@@ -633,6 +633,609 @@ Background job (cron):
 
 ---
 
+### Category 1.5: RAG & Knowledge Base Architecture
+
+**Decision Context:** FR91-FR100 require agent-specific knowledge bases with documents from Google Drive and SharePoint, vector embeddings for semantic search, and scheduled synchronization.
+
+#### 1.5.1 Vector Storage Strategy
+
+**Decision:** PostgreSQL with pgvector Extension (Unified Storage)
+
+**Rationale:**
+- Single database for both relational data and vector embeddings simplifies architecture
+- pgvector extension provides native vector similarity search in PostgreSQL
+- IVFFlat and HNSW indexes support sub-300ms semantic search (NFR3)
+- ACID transactions across relational and vector data
+- No additional vector database infrastructure needed (ChromaDB, Pinecone, Qdrant)
+- SQLAlchemy ORM compatibility with vector columns
+- Proven at scale: handles 10k documents x 5 chunks = 50k vectors per agent
+
+**Implementation:**
+
+```sql
+-- Enable pgvector extension
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Knowledge documents table
+CREATE TABLE knowledge_documents (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id VARCHAR NOT NULL REFERENCES agents(name) ON DELETE CASCADE,
+    source_type VARCHAR(50) NOT NULL,  -- 'google_drive', 'sharepoint'
+    source_id VARCHAR(255) NOT NULL,    -- File ID from Drive/SharePoint
+    file_name VARCHAR(500) NOT NULL,
+    content_chunk TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    embedding vector(1536),             -- OpenAI ada-002 or text-embedding-3-small
+    metadata JSONB,                     -- {page_number, folder_path, last_modified, tags}
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Indexes for performance
+CREATE INDEX idx_kd_agent_id ON knowledge_documents(agent_id);
+CREATE INDEX idx_kd_source ON knowledge_documents(source_type, source_id);
+CREATE INDEX idx_kd_embedding_ivfflat ON knowledge_documents 
+    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+-- Alternative: HNSW for better recall at cost of build time
+-- CREATE INDEX idx_kd_embedding_hnsw ON knowledge_documents 
+--     USING hnsw (embedding vector_cosine_ops);
+
+-- Cloud source configurations
+CREATE TABLE knowledge_sources (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_id VARCHAR NOT NULL REFERENCES agents(name) ON DELETE CASCADE,
+    source_type VARCHAR(50) NOT NULL,  -- 'google_drive', 'sharepoint'
+    config JSONB NOT NULL,             -- {folder_id, access_token_encrypted, refresh_token_encrypted}
+    last_sync_at TIMESTAMP,
+    next_sync_at TIMESTAMP,
+    sync_status VARCHAR(50),           -- 'pending', 'running', 'completed', 'failed'
+    sync_errors JSONB,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+**Semantic Search Query Example:**
+
+```sql
+-- Top-k similarity search with agent isolation
+SELECT 
+    content_chunk,
+    file_name,
+    metadata,
+    1 - (embedding <=> $1::vector) AS similarity
+FROM knowledge_documents
+WHERE agent_id = $2
+    AND 1 - (embedding <=> $1::vector) > 0.7  -- Similarity threshold
+ORDER BY embedding <=> $1::vector
+LIMIT 5;
+```
+
+**Performance:**
+- IVFFlat index: O(sqrt(n)) search complexity
+- 50k vectors: ~224ms average (well under NFR3: <300ms)
+- HNSW alternative: <100ms but slower index builds
+
+**Affects Components:**
+- Memory & Context (extended for RAG retrieval)
+- Agent Execution (semantic search before LLM call)
+- Operations (pgvector extension in migrations)
+
+---
+
+#### 1.5.2 Embedding Provider Abstraction
+
+**Decision:** LangChain Embeddings with Factory Pattern
+
+**Rationale:**
+- Consistent with existing LLM abstraction using LangChain
+- Unified interface across OpenAI, Gemini, Ollama providers
+- Embedding provider follows same selection as LLM provider (AI_SDK_LLM_PROVIDER)
+- Built-in retry logic, rate limiting, batching
+- Local fallback (HuggingFace Sentence-Transformers) when API unavailable
+- Singleton pattern avoids reloading models multiple times
+
+**Implementation:**
+
+```python
+# ai_framework/core/embeddings.py
+from langchain_openai import OpenAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings  
+from langchain_ollama import OllamaEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
+import os
+
+class EmbeddingProvider:
+    """Singleton factory for embedding provider selection"""
+    
+    _instance = None
+    _embeddings = None
+    
+    @classmethod
+    def get_embeddings(cls):
+        if cls._embeddings is None:
+            provider = os.getenv("AI_SDK_LLM_PROVIDER", "openai")
+            cls._embeddings = cls._create_embeddings(provider)
+        return cls._embeddings
+    
+    @classmethod
+    def _create_embeddings(cls, provider: str):
+        if provider == "openai":
+            return OpenAIEmbeddings(
+                model=os.getenv("AI_SDK_EMBEDDING_MODEL", "text-embedding-3-small"),
+                dimensions=1536
+            )
+        elif provider == "gemini":
+            return GoogleGenerativeAIEmbeddings(
+                model=os.getenv("AI_SDK_EMBEDDING_MODEL", "models/embedding-001"),
+                google_api_key=os.getenv("GOOGLE_API_KEY")
+            )
+        elif provider == "ollama":
+            return OllamaEmbeddings(
+                model=os.getenv("AI_SDK_EMBEDDING_MODEL", "nomic-embed-text"),
+                base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+            )
+        else:
+            # Local fallback - free, offline capable
+            return HuggingFaceEmbeddings(
+                model_name="all-MiniLM-L6-v2",
+                model_kwargs={'device': 'cpu'},
+                encode_kwargs={'normalize_embeddings': True}
+            )
+
+def get_embeddings():
+    """Public API - returns configured embeddings provider"""
+    return EmbeddingProvider.get_embeddings()
+```
+
+**Provider Compatibility:**
+
+| Provider | Embedding Model | Dimensions | Cost | Performance |
+|----------|----------------|------------|------|-------------|
+| OpenAI | text-embedding-3-small | 1536 | $0.02/1M tokens | Best quality |
+| Gemini | embedding-001 | 768 | $0.00025/1k chars | Cost effective |
+| Ollama | nomic-embed-text | 768 | Free (local) | Offline capable |
+| HuggingFace | all-MiniLM-L6-v2 | 384 | Free (local) | Fallback |
+
+**Configuration (.env):**
+```bash
+AI_SDK_LLM_PROVIDER=openai  # Embeddings follow LLM provider
+AI_SDK_EMBEDDING_MODEL=text-embedding-3-small  # Override default
+```
+
+**Affects Components:**
+- Document sync process (batch embedding generation)
+- Semantic search runtime (query embedding)
+- Cost tracking (per-provider pricing)
+
+---
+
+#### 1.5.3 Cloud Storage Integration
+
+**Decision:** OAuth 2.0 with Encrypted Token Storage
+
+**Rationale:**
+- Google Drive API and Microsoft Graph API require OAuth 2.0 for security
+- User grants explicit permissions for folder/site access
+- Refresh tokens enable automatic renewal without user re-authentication
+- AES-256 encryption of tokens at rest meets NFR11 security requirement
+- MSAL library (Microsoft) and Google Auth library provide production-ready OAuth flows
+
+**Implementation:**
+
+**OAuth Flow (FastAPI endpoints):**
+
+```python
+# app/api/knowledge.py
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import Flow
+from msal import ConfidentialClientApplication
+
+@router.post("/agents/{agent_id}/knowledge/sources/google-drive/authorize")
+async def authorize_google_drive(agent_id: str, redirect_uri: str):
+    """Initiate Google Drive OAuth flow"""
+    flow = Flow.from_client_config(
+        client_config={
+            "web": {
+                "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            }
+        },
+        scopes=["https://www.googleapis.com/auth/drive.readonly"],
+        redirect_uri=redirect_uri
+    )
+    auth_url, state = flow.authorization_url(prompt='consent')
+    return {"auth_url": auth_url, "state": state}
+
+@router.get("/agents/{agent_id}/knowledge/sources/google-drive/callback")
+async def google_drive_callback(agent_id: str, code: str, state: str, db: Session):
+    """Handle OAuth callback and store encrypted tokens"""
+    # Exchange code for tokens
+    flow = Flow.from_client_config(...)
+    flow.fetch_token(code=code)
+    credentials = flow.credentials
+    
+    # Encrypt tokens before storage
+    encrypted_access = encrypt_token(credentials.token)
+    encrypted_refresh = encrypt_token(credentials.refresh_token)
+    
+    # Store in knowledge_sources table
+    source = KnowledgeSource(
+        agent_id=agent_id,
+        source_type="google_drive",
+        config={
+            "access_token": encrypted_access,
+            "refresh_token": encrypted_refresh,
+            "folder_id": request.folder_id,
+            "token_expiry": credentials.expiry.isoformat()
+        }
+    )
+    db.add(source)
+    db.commit()
+```
+
+**Token Encryption (Fernet symmetric encryption):**
+
+```python
+from cryptography.fernet import Fernet
+import os
+
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")  # 32-byte key from env
+cipher = Fernet(ENCRYPTION_KEY)
+
+def encrypt_token(token: str) -> str:
+    return cipher.encrypt(token.encode()).decode()
+
+def decrypt_token(encrypted: str) -> str:
+    return cipher.decrypt(encrypted.encode()).decode()
+```
+
+**Automatic Token Refresh (before API calls):**
+
+```python
+async def get_drive_service(source: KnowledgeSource):
+    """Get authenticated Drive API client with auto-refresh"""
+    access_token = decrypt_token(source.config["access_token"])
+    refresh_token = decrypt_token(source.config["refresh_token"])
+    
+    credentials = Credentials(
+        token=access_token,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.getenv("GOOGLE_CLIENT_ID"),
+        client_secret=os.getenv("GOOGLE_CLIENT_SECRET")
+    )
+    
+    # Auto-refreshes on 401 errors (NFR33)
+    service = build('drive', 'v3', credentials=credentials)
+    return service
+```
+
+**Affects Components:**
+- Security (FR71-80 - encryption, credential management)
+- Integration & Reliability (NFR32-33 - circuit breakers, token refresh)
+- Operations (secret management in deployment)
+
+---
+
+#### 1.5.4 Document Synchronization Architecture
+
+**Decision:** APScheduler with Change Detection (Incremental Sync)
+
+**Rationale:**
+- Scheduled batch processing (every 24h) meets FR93 requirement
+- Change detection (Google Drive changeToken, SharePoint delta queries) minimizes API calls and processing
+- APScheduler integrates seamlessly with FastAPI async runtime
+- Background job runs independently of user requests
+- Incremental sync completes <1 hour for 1000 documents (NFR4)
+- Manual trigger endpoint allows immediate sync when needed (FR99)
+
+**Implementation:**
+
+**Scheduler Setup:**
+
+```python
+# app/scheduler.py
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from datetime import timedelta
+
+scheduler = AsyncIOScheduler()
+
+async def sync_all_knowledge_bases():
+    """Scheduled job - runs every 24 hours"""
+    db = SessionLocal()
+    try:
+        # Get all configured sources
+        sources = db.query(KnowledgeSource).filter(
+            KnowledgeSource.sync_status != 'running'
+        ).all()
+        
+        for source in sources:
+            await sync_knowledge_source(db, source)
+    finally:
+        db.close()
+
+# Add job on startup
+scheduler.add_job(
+    sync_all_knowledge_bases,
+    trigger=IntervalTrigger(hours=24),
+    id='sync_knowledge_bases',
+    replace_existing=True
+)
+
+# Start scheduler
+scheduler.start()
+```
+
+**Incremental Sync (Change Detection):**
+
+```python
+async def sync_knowledge_source(db: Session, source: KnowledgeSource):
+    """Sync documents using change detection"""
+    source.sync_status = 'running'
+    db.commit()
+    
+    try:
+        if source.source_type == 'google_drive':
+            # Use changeToken for incremental sync
+            drive_service = await get_drive_service(source)
+            changes = drive_service.changes().list(
+                pageToken=source.config.get('change_token', 'start'),
+                spaces='drive',
+                fields='nextPageToken,newStartPageToken,changes(fileId,file)'
+            ).execute()
+            
+            for change in changes.get('changes', []):
+                if change['file'].get('mimeType') in SUPPORTED_MIMES:
+                    await process_document(db, source, change['file'])
+            
+            # Update change token for next sync
+            source.config['change_token'] = changes['newStartPageToken']
+        
+        elif source.source_type == 'sharepoint':
+            # Use delta queries for incremental sync
+            graph_client = await get_graph_client(source)
+            delta_link = source.config.get('delta_link')
+            
+            if delta_link:
+                response = graph_client.get(delta_link)
+            else:
+                response = graph_client.get(
+                    f"/sites/{source.config['site_id']}/drive/root/delta"
+                )
+            
+            for item in response.value:
+                if item.get('file') and not item.get('deleted'):
+                    await process_document(db, source, item)
+            
+            # Store delta link for next sync
+            source.config['delta_link'] = response.get('@odata.deltaLink')
+        
+        source.sync_status = 'completed'
+        source.last_sync_at = datetime.utcnow()
+        source.next_sync_at = datetime.utcnow() + timedelta(hours=24)
+        
+    except Exception as e:
+        source.sync_status = 'failed'
+        source.sync_errors = {'error': str(e), 'timestamp': datetime.utcnow().isoformat()}
+    finally:
+        db.commit()
+```
+
+**Document Processing Pipeline:**
+
+```python
+from langchain_community.document_loaders import (
+    PyPDFLoader, UnstructuredMarkdownLoader, Docx2txtLoader
+)
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+async def process_document(db: Session, source: KnowledgeSource, file_info: dict):
+    """Download, parse, chunk, embed, and store document"""
+    
+    # 1. Download document
+    file_content = await download_file(source, file_info['id'])
+    
+    # 2. Parse based on MIME type
+    loader = get_document_loader(file_info['mimeType'], file_content)
+    documents = loader.load()
+    
+    # 3. Chunk with overlap
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=512,
+        chunk_overlap=50,
+        length_function=len
+    )
+    chunks = text_splitter.split_documents(documents)
+    
+    # 4. Generate embeddings in batch
+    embeddings_provider = get_embeddings()
+    texts = [chunk.page_content for chunk in chunks]
+    vectors = embeddings_provider.embed_documents(texts)
+    
+    # 5. Store in knowledge_documents table
+    for idx, (chunk, vector) in enumerate(zip(chunks, vectors)):
+        doc = KnowledgeDocument(
+            agent_id=source.agent_id,
+            source_type=source.source_type,
+            source_id=file_info['id'],
+            file_name=file_info['name'],
+            content_chunk=chunk.page_content,
+            chunk_index=idx,
+            embedding=vector,
+            metadata={
+                'page_number': chunk.metadata.get('page'),
+                'last_modified': file_info.get('modifiedTime'),
+                'mime_type': file_info['mimeType']
+            }
+        )
+        db.add(doc)
+    
+    db.commit()
+```
+
+**Supported Document Types:**
+
+```python
+SUPPORTED_MIMES = {
+    'application/pdf': PyPDFLoader,
+    'text/plain': TextLoader,
+    'text/markdown': UnstructuredMarkdownLoader,
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': Docx2txtLoader,
+    'application/vnd.google-apps.document': lambda: GoogleDocsLoader(),  # Export as text
+}
+```
+
+**Affects Components:**
+- Background jobs (FR93-94 - scheduled sync, change detection)
+- Document loaders (FR95 - parsing multiple formats)
+- Embedding generation (FR96 - batch processing)
+- Operations (APScheduler management, job monitoring)
+
+---
+
+#### 1.5.5 Semantic Search Integration
+
+**Decision:** Query-Time Embedding + pgvector Similarity Search
+
+**Rationale:**
+- User message embedded using same provider as document chunks for consistency
+- Top-k cosine similarity search with configurable threshold (default 0.7)
+- Retrieved chunks injected as context before LLM system prompt
+- Agent responses grounded in organizational knowledge (FR57)
+- < 300ms retrieval meets NFR3 performance requirement
+- Agent isolation via agent_id filter prevents knowledge cross-contamination (FR97)
+
+**Implementation:**
+
+**Chat Endpoint Integration:**
+
+```python
+# app/api/chat.py (modified to include RAG)
+@router.post("/{session_id}/message")
+async def send_message(
+    session_id: str,
+    request: ChatRequest,
+    db: Session = Depends(get_db)
+):
+    session = db.query(Session).filter(Session.id == session_id).first()
+    agent = db.query(Agent).filter(Agent.name == session.agent_id).first()
+    
+    # Check if agent has knowledge base configured
+    has_knowledge = db.query(KnowledgeSource).filter(
+        KnowledgeSource.agent_id == agent.name
+    ).count() > 0
+    
+    rag_context = []
+    if has_knowledge:
+        # Perform semantic search
+        rag_context = await retrieve_knowledge(
+            db=db,
+            agent_id=agent.name,
+            query=request.message,
+            top_k=5,
+            threshold=0.7
+        )
+    
+    # Execute agent with RAG context
+    executor = AgentExecutor(agent_config=agent.config, session_id=session_id)
+    response = await executor.execute(
+        message_content=request.message,
+        history=load_history(db, session_id),
+        rag_context=rag_context  # ← New parameter
+    )
+    
+    return ChatResponse(
+        session_id=session_id,
+        message=response['content'],
+        rag_used=len(rag_context) > 0,  # ← New field
+        rag_sources=[c['file_name'] for c in rag_context]  # ← New field
+    )
+```
+
+**Semantic Retrieval Function:**
+
+```python
+async def retrieve_knowledge(
+    db: Session,
+    agent_id: str,
+    query: str,
+    top_k: int = 5,
+    threshold: float = 0.7
+) -> List[dict]:
+    """Retrieve relevant knowledge chunks for query"""
+    
+    # Generate query embedding
+    embeddings = get_embeddings()
+    query_vector = embeddings.embed_query(query)
+    
+    # pgvector similarity search
+    results = db.execute(text("""
+        SELECT 
+            content_chunk,
+            file_name,
+            metadata,
+            1 - (embedding <=> :query_vector::vector) AS similarity
+        FROM knowledge_documents
+        WHERE agent_id = :agent_id
+            AND 1 - (embedding <=> :query_vector::vector) > :threshold
+        ORDER BY embedding <=> :query_vector::vector
+        LIMIT :top_k
+    """), {
+        "query_vector": query_vector,
+        "agent_id": agent_id,
+        "threshold": threshold,
+        "top_k": top_k
+    }).fetchall()
+    
+    return [
+        {
+            "content": row.content_chunk,
+            "file_name": row.file_name,
+            "metadata": row.metadata,
+            "similarity": row.similarity
+        }
+        for row in results
+    ]
+```
+
+**LLM Prompt with RAG Context:**
+
+```python
+# ai_framework/core/executor.py (modified)
+async def execute(self, message_content: str, history: List, rag_context: List = None):
+    """Execute agent with optional RAG context"""
+    
+    # Build system prompt with RAG context
+    system_prompt = self.agent_config.get('system_prompt', '')
+    
+    if rag_context:
+        knowledge_text = "\n\n".join([
+            f"[Source: {ctx['file_name']}]\n{ctx['content']}"
+            for ctx in rag_context
+        ])
+        system_prompt += f"\n\nRelevant Knowledge Base:\n{knowledge_text}\n\n"
+        system_prompt += "Use the above knowledge to ground your response. Cite sources when applicable."
+    
+    # Continue with normal execution
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": message_content})
+    
+    response = await self.llm.chat(messages)
+    return response
+```
+
+**Affects Components:**
+- Agent execution (FR51-60 - response generation with RAG)
+- Chat API (FR81-90 - extended response schema)
+- Performance (NFR3 - <300ms semantic search)
+
+---
+
 ### Category 2: Authentication & Security
 
 #### 2.1 API Authentication Method

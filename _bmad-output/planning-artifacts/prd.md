@@ -85,13 +85,14 @@ Agents are created via code using the SDK, not through the API. The API is for r
 ### MVP (Phase 1: Months 0-3)
 
 **SDK (Python Package):**
-- Agent decorators: `@ai_framework.agent` for defining agents
+- Agent decorators: `@ai_framework.agent` for defining agents with inline config
 - Tool decorators: `@ai_framework.tool` for defining tools
 - LLM abstraction (LiteLLM): OpenAI, Anthropic, Azure OpenAI
 - Persistent memory & context (PostgreSQL)
+- **RAG & Knowledge Base**: Per-agent document indexing with vector embeddings
 - Tool execution system with parameter validation
 - Basic planning mode (chain-of-thought)
-- Configuration via YAML (per-agent)
+- Global configuration via .env file
 - Debug mode with structured logs
 - Mock LLM for development
 - CLI playground for interactive agent testing
@@ -122,6 +123,12 @@ Agents are created via code using the SDK, not through the API. The API is for r
 - POST /chat/{session_id}/message - Send message to agent
 - DELETE /chat/{session_id} - Delete chat session
 - GET /chat/ - List chat sessions
+- POST /agents/{agent_id}/knowledge/source - Configure Google Drive or SharePoint source
+- GET /agents/{agent_id}/knowledge/sources - List configured cloud sources
+- DELETE /agents/{agent_id}/knowledge/source/{source_id} - Remove cloud source
+- POST /agents/{agent_id}/knowledge/sync - Force immediate synchronization
+- GET /agents/{agent_id}/knowledge/status - Get sync and indexation status
+- GET /agents/{agent_id}/knowledge/documents - List indexed documents from cloud sources
 - GET /health - Health check
 - GET /metrics - Performance metrics
 - POST /admin/api-keys - Generate API key
@@ -266,6 +273,9 @@ Integrates framework's API into e-commerce website in 3 hours.
 
 **Credential Management:**
 - Environment variables / secrets manager
+- OAuth 2.0 tokens encrypted at rest (AES-256)
+- Refresh token rotation and secure storage
+- Google/Microsoft service account credentials encrypted
 - Never in code or logs
 - Encryption at rest
 - Mandatory HTTPS/TLS
@@ -359,6 +369,20 @@ Integrates framework's API into e-commerce website in 3 hours.
 - Automatic window management
 - Optional Redis caching
 
+**2.5. RAG & Knowledge Base**
+- Vector storage using PostgreSQL with pgvector extension
+- Cloud storage integration: Google Drive API and Microsoft SharePoint/Graph API
+- OAuth 2.0 authentication for cloud access with refresh token management
+- Scheduled batch sync & indexing (every 24h via cron/APScheduler)
+- Document loaders: PDF, TXT, Markdown, DOCX, Google Docs, Office files
+- Change detection: fetch only new/modified documents since last sync
+- Embedding generation (OpenAI Embeddings or Sentence-Transformers)
+- Cosine similarity search using pgvector indexes
+- Chunking strategy with overlap
+- Metadata filtering (source, date, tags, folder path) via PostgreSQL queries
+- Knowledge base isolation per agent using agent_id in vector table
+- Credentials encryption and secure storage
+
 **3. Tool Execution Engine**
 - Automatic discovery & registration
 - Parameter validation via type hints
@@ -382,7 +406,14 @@ Integrates framework's API into e-commerce website in 3 hours.
 - Pydantic (validation)
 - FastAPI (REST)
 - Prometheus client (metrics)
-- PostgreSQL (data store)
+- PostgreSQL (data store + vector store with pgvector extension)
+- pgvector (PostgreSQL extension for vector similarity search)
+- OpenAI Embeddings or Sentence-Transformers (embeddings generation)
+- LangChain Document Loaders (PDF, TXT, Markdown parsers)
+- APScheduler (scheduled sync and indexing jobs)
+- Google Drive API (google-api-python-client)
+- Microsoft Graph API (msal, msgraph-sdk-python)
+- OAuth 2.0 libraries (authlib, oauthlib)
 
 **Infrastructure:**
 - Python ≥3.10
@@ -430,13 +461,13 @@ Integrates framework's API into e-commerce website in 3 hours.
 
 ---
 
-## Functional Requirements (90 Total)
+## Functional Requirements (100 Total)
 
 ### FR1-FR10: Core Framework (10 requirements)
-Installation, YAML config, environment variables, multiple environments, programmatic config, hot reload, sensible defaults
+PyPI installation, .env configuration, environment variables, multiple environments, inline agent config via decorators, hot reload, sensible defaults
 
 ### FR11-FR20: Agent Development (10 requirements)
-Template creation, customization, local testing, CLI playground, error feedback, type hints
+Template creation, inline configuration via @agent decorator, local testing, CLI playground, error feedback, type hints
 
 ### FR21-FR30: Tools/Plugins (10 requirements)
 Decorator registration, validation, discovery, class-based extension, hooks, parameter passing
@@ -459,17 +490,33 @@ API key management, encryption, HTTPS/TLS, PII detection/masking, audit logs, ra
 ### FR81-FR90: API & Operations (10 requirements)
 POST /chat, GET /session, DELETE /session, health checks, metrics, input validation, error handling, OpenAPI, Dockerfile, Helm, health probes, horizontal scaling, stateless design, automatic migrations
 
+### FR91-FR100: RAG & Knowledge Base (10 requirements)
+- FR91: Configure Google Drive folder or SharePoint site as knowledge source per agent
+- FR92: OAuth 2.0 authentication flow for Google Drive and SharePoint access
+- FR93: Scheduled batch sync (every 24h) fetches new/modified documents from cloud sources
+- FR94: Change detection using Drive API changeToken or SharePoint delta queries
+- FR95: Document parsing supports PDF, TXT, Markdown, DOCX, Google Docs, Office files
+- FR96: Automatic embedding generation for synced documents with chunking strategy
+- FR97: Each agent has isolated knowledge base and vector store
+- FR98: Semantic search retrieves relevant chunks during chat runtime with metadata filtering
+- FR99: Manual sync trigger via API endpoint for immediate indexation
+- FR100: Knowledge base status tracking (last sync, document count, embedding count, errors)
+
 ---
 
-## Non-Functional Requirements (37 Total)
+## Non-Functional Requirements (44 Total)
 
-### Performance (7)
+### Performance (10)
 - Chat response < 3s (simple), < 15s (with planning)
+- RAG semantic search < 300ms for top-k retrieval
+- Document indexing batch < 1 hour for 1000 documents
 - API latency < 500ms
 - Dashboard < 2s load
 - Logging < 50ms per entry
 - Support 100+ concurrent calls
-- < 500MB memory per agent
+- < 500MB memory per agent (excluding vector store)
+- Vector store < 2GB per agent for 10k chunks
+- Embedding generation < 5s per 1k tokens
 
 ### Security & Compliance (9)
 - AES-256 encryption at rest
@@ -482,7 +529,7 @@ POST /chat, GET /session, DELETE /session, health checks, metrics, input validat
 - > 95% content moderation recall
 - Support API key rotation without downtime
 
-### Scalability (7)
+### Scalability (9)
 - Horizontal scaling without reconfigure
 - MVP: 10-20 agents
 - 12-month: 100+ agents
@@ -490,15 +537,19 @@ POST /chat, GET /session, DELETE /session, health checks, metrics, input validat
 - < 10% latency at 10x load
 - Stateless design
 - Efficient connection pooling
+- Support up to 10k documents per agent knowledge base (MVP)
+- Vector store scales independently from API instances
 
-### Integration & Reliability (7)
+### Integration & Reliability (9)
 - Automatic LLM fallback
-- 3 retries with exponential backoff
+- 3 retries with exponential backoff for all external APIs (LLM, Drive, SharePoint)
 - ACID transactions
-- Circuit breakers
+- Circuit breakers for cloud storage APIs
+- OAuth token refresh automatic retry on 401 errors
 - 99% uptime target
 - Recovery without data loss
 - Structured failure logging
+- Graceful degradation if Drive/SharePoint unavailable (use cached knowledge)
 
 ### Maintainability (7)
 - ≥ 80% test coverage
@@ -518,8 +569,8 @@ POST /chat, GET /session, DELETE /session, health checks, metrics, input validat
 This document provides comprehensive specification for the AI Agent Framework MVP:
 - Success metrics and user journeys
 - Complete technical architecture
-- 90 functional requirements
-- 37 non-functional requirements
+- 100 functional requirements (including RAG with Google Drive & SharePoint integration)
+- 44 non-functional requirements
 - Realistic 3-month roadmap
 - Security, compliance, and risk mitigation
 

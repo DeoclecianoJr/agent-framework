@@ -34,10 +34,10 @@ class JSONFormatter(logging.Formatter):
         if record.exc_info:
             log_data["exception"] = self.formatException(record.exc_info)
 
-        return json.dumps(log_data)
+        return json.dumps(log_data) + "\n=============================================="
 
 
-def setup_logging(level: str = "INFO", log_file: Optional[str] = "logs/app.log") -> None:
+def setup_logging(level: str = "DEBUG", log_file: Optional[str] = "logs/app.log") -> None:
     """Configure application logging with JSON formatter.
 
     Args:

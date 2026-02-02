@@ -11,7 +11,12 @@ def test_sdk_settings_defaults(monkeypatch):
     """Verify SDK default settings."""
     # Ensure no config file is loaded
     monkeypatch.setenv("AI_FRAMEWORK_CONFIG", "non_existent.yaml")
-    settings = SDKSettings()
+    # Clear environment variables
+    for key in list(os.environ.keys()):
+        if key.startswith("AI_SDK_"):
+            monkeypatch.delenv(key, raising=False)
+            
+    settings = SDKSettings(_env_file=None) # Disable .env loading for this test instance
     assert settings.app_env == "dev"
     assert settings.debug is True
     assert settings.llm_provider == "mock"
@@ -30,7 +35,7 @@ def test_env_override(monkeypatch):
     """Test environment variable overrides."""
     monkeypatch.setenv("AI_SDK_APP_ENV", "production")
     monkeypatch.setenv("AI_SDK_DEBUG", "false")
-    monkeypatch.setenv("AI_APP_DATABASE_URL", "sqlite:///./prod.db")
+    monkeypatch.setenv("AI_SDK_DATABASE_URL", "sqlite:///./prod.db")
     
     sdk_settings = SDKSettings()
     api_settings = APISettings()
@@ -51,9 +56,14 @@ def test_yaml_load(monkeypatch, tmp_path):
     with open(config_file, "w") as f:
         yaml.dump(config_data, f)
     
+    # Clear any existing env vars that could interfere
+    for key in list(os.environ.keys()):
+        if key.startswith("AI_SDK_") or key.startswith("AI_API_"):
+            monkeypatch.delenv(key, raising=False)
+    
     monkeypatch.setenv("AI_FRAMEWORK_CONFIG", str(config_file))
     
-    # Reload settings
+    # Create new instances to avoid caching
     sdk_settings = SDKSettings()
     api_settings = APISettings()
     

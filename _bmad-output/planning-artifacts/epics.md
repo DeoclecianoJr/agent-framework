@@ -510,6 +510,192 @@ So that agents remain responsive despite temporary provider issues.
 **And** all retry attempts and fallbacks are logged with trace IDs
 **And** successful requests reset failure counters
 
+### Story 4.6: Google Gemini Provider Integration
+
+As a developer,
+I want to integrate Google Gemini as an LLM provider,
+So that I can leverage Google's latest generative AI models in my agents.
+
+**Acceptance Criteria:**
+
+**Given** I have a valid Google AI API key
+**When** I configure Gemini as an LLM provider in YAML
+**Then** the framework connects to Gemini API successfully
+**And** I can use models like gemini-pro and gemini-pro-vision
+**And** Gemini provider follows the same abstraction interface as other providers
+**And** Streaming responses work correctly with Gemini models
+**And** Function calling / tool use is supported (when available)
+**And** Token counting is accurate for Gemini models
+**And** Cost tracking reflects Gemini's pricing model
+**And** Retry logic and fallback work with Gemini provider
+**And** Configuration includes model selection, temperature, and safety settings
+**And** Provider health checks verify Gemini API availability
+
+**Technical Requirements:**
+
+- Install google-generativeai Python SDK (`pip install google-generativeai`)
+- Implement GeminiProvider class in `ai_framework/core/llm.py` or `ai_framework/integrations/gemini.py`
+- Configuration format in config.yaml:
+  ```yaml
+  llm:
+    providers:
+      gemini:
+        api_key: ${GOOGLE_AI_API_KEY}
+        model: gemini-pro
+        temperature: 0.7
+        safety_settings: "default"
+  ```
+- Map Gemini responses to standardized LLM abstraction format
+- Implement error handling for Gemini-specific exceptions
+- Add tests for Gemini provider (unit + integration with mock/real API)
+
+**Definition of Done:**
+
+- [ ] GeminiProvider class implemented with full abstraction interface
+- [ ] Configuration parsing and validation for Gemini settings
+- [ ] Chat completion works with gemini-pro model
+- [ ] Streaming responses functional
+- [ ] Token counting implemented
+- [ ] Error handling and retry logic working
+- [ ] Unit tests with mocked Gemini API (≥80% coverage)
+- [ ] Integration tests with real Gemini API (optional, skippable in CI)
+- [ ] Documentation updated with Gemini configuration examples
+- [ ] Health check verifies Gemini API connectivity
+
+### Story 4.7: Phi3 Local Provider with Ollama
+
+As a developer,
+I want to run local LLM inference using Phi3 via Ollama,
+So that I can develop and test agents without cloud dependencies or costs.
+
+**Acceptance Criteria:**
+
+**Given** I have Ollama installed locally with phi3:mini model
+**When** I configure Ollama as an LLM provider
+**Then** the framework connects to local Ollama instance (http://localhost:11434)
+**And** I can use phi3:mini model for agent conversations
+**And** Ollama provider follows the same abstraction interface as cloud providers
+**And** Streaming responses work correctly with Ollama models
+**And** Function calling is handled gracefully (fallback if not supported)
+**And** Token counting estimates are provided (Ollama doesn't report exact counts)
+**And** Cost tracking shows $0 for local inference
+**And** Provider health checks verify Ollama is running and model is loaded
+**And** Configuration allows selecting different Ollama models
+**And** Fallback to cloud provider works if Ollama is unavailable
+
+**Technical Requirements:**
+
+- Use Ollama REST API (no additional Python package needed, requests library sufficient)
+- Implement OllamaProvider class in `ai_framework/core/llm.py` or `ai_framework/integrations/ollama.py`
+- Configuration format in config.yaml:
+  ```yaml
+  llm:
+    providers:
+      ollama:
+        base_url: http://localhost:11434
+        model: phi3:mini
+        temperature: 0.7
+  ```
+- Map Ollama responses to standardized LLM abstraction format
+- Handle cases where Ollama service is not running
+- Implement token estimation (use tiktoken or simple word-count approximation)
+- Add tests for Ollama provider (unit + integration with real Ollama instance)
+
+**Definition of Done:**
+
+- [ ] OllamaProvider class implemented with full abstraction interface
+- [ ] Configuration parsing and validation for Ollama settings
+- [ ] Chat completion works with phi3:mini model
+- [ ] Streaming responses functional
+- [ ] Token estimation implemented (approximate counts)
+- [ ] Error handling for Ollama service unavailable
+- [ ] Health check verifies Ollama service and model availability
+- [ ] Unit tests with mocked Ollama API (≥80% coverage)
+- [ ] Integration tests with real Ollama instance (skippable if Ollama not installed)
+- [ ] Documentation updated with Ollama setup and configuration
+- [ ] Fallback to cloud provider tested when Ollama unavailable
+
+### Story 4.8: LLM Module Refactoring - Separate Provider Classes
+
+As a developer maintaining the codebase,
+I want LLM provider implementations separated into individual modules,
+So that the code is more maintainable, testable, and easier to extend with new providers.
+
+**Acceptance Criteria:**
+
+**Given** the current `llm.py` file contains 814 lines with multiple provider implementations
+**When** I refactor the module into a structured package
+**Then** each LLM provider has its own dedicated file
+**And** base abstractions and utilities are in separate modules
+**And** all existing functionality continues to work without breaking changes
+**And** imports remain backward compatible for existing code
+**And** tests are updated to match new structure
+**And** new providers can be added without modifying existing provider code
+
+**Technical Requirements:**
+
+- Create `ai_framework/core/llm/` package structure:
+  ```
+  ai_framework/core/llm/
+    __init__.py           # Public API exports (BaseLLM, LLMProvider, get_llm, etc.)
+    base.py               # BaseLLM, LLMResponse, abstract interfaces
+    utils.py              # count_tokens, calculate_cost, shared utilities
+    mock.py               # MockLLM implementation
+    ollama.py             # OllamaLLM implementation
+    gemini.py             # GeminiLLM implementation
+    provider.py           # LLMProvider factory class
+    circuit_breaker.py    # Circuit breaker logic (optional, if complex enough)
+  ```
+
+- Maintain backward compatibility:
+  ```python
+  # This should still work after refactoring
+  from ai_framework.core.llm import BaseLLM, LLMProvider, get_llm, MockLLM
+  ```
+
+- Move existing code:
+  - Base classes and abstractions → `base.py`
+  - Utility functions (count_tokens, calculate_cost) → `utils.py`
+  - MockLLM class → `mock.py` (~30 lines)
+  - OllamaLLM class → `ollama.py` (~150 lines)
+  - GeminiLLM class → `gemini.py` (~250 lines)
+  - LLMProvider factory → `provider.py` (~100 lines)
+  - Circuit breaker logic → keep in current location or extract to `circuit_breaker.py`
+
+- Update imports throughout codebase:
+  - Update internal imports within llm package modules
+  - Ensure `__init__.py` exports all public APIs
+  - Update test files to import from new locations
+  - Verify no circular import issues
+
+- Testing strategy:
+  - Run full existing test suite to verify no regressions
+  - Update test file organization to match new structure
+  - Add tests for new module boundaries if needed
+  - Ensure test coverage remains ≥80%
+
+**Definition of Done:**
+
+- [ ] New package structure created with all files
+- [ ] Code moved from monolithic `llm.py` to separate modules
+- [ ] `__init__.py` exports maintain backward compatibility
+- [ ] All imports updated throughout codebase
+- [ ] Full test suite passes without changes to test logic
+- [ ] No regressions in functionality
+- [ ] Test file organization updated (e.g., `test_llm_base.py`, `test_ollama.py`, `test_gemini.py`)
+- [ ] Code coverage remains ≥80%
+- [ ] Documentation updated with new import patterns (if applicable)
+- [ ] PR review confirms improved code organization
+- [ ] New structure makes future provider additions easier
+
+**Benefits:**
+
+- **Maintainability**: Each provider ~100-250 lines instead of 814-line monolith
+- **Testability**: Isolated testing of individual providers
+- **Extensibility**: Add new providers without touching existing code
+- **Clarity**: Clear separation of concerns and responsibilities
+- **Team collaboration**: Multiple developers can work on different providers simultaneously
+
 ## Epic 5: Tools & Agent Capabilities
 
 Agentes podem usar ferramentas e executar ações além de conversar, expandindo suas capacidades além de geração de texto.

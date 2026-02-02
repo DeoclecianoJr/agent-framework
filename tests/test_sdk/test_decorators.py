@@ -53,7 +53,7 @@ def test_tool_decorator_registers_and_invokes():
 
 
 def test_mock_llm_chat_and_token_count():
-    llm = get_llm()
+    llm = get_llm("mock")
     result = asyncio.run(llm.chat([{"role": "user", "content": "hello"}]))
 
     assert result["content"] == "mock-response"
